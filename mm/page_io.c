@@ -63,8 +63,9 @@ void end_swap_bio_write(struct bio *bio)
 		 * Also clear PG_reclaim to avoid rotate_reclaimable_page()
 		 */
 		set_page_dirty(page);
-		pr_alert("Write-error on swap-device (%u:%u:%llu)\n",
-			 MAJOR(bio_dev(bio)), MINOR(bio_dev(bio)),
+		pr_alert_ratelimited("Write-error on swap-device (%u:%u:%llu)\n",
+			 MAJOR(bio_dev(bio)),
+			 MINOR(bio_dev(bio)),
 			 (unsigned long long)bio->bi_iter.bi_sector);
 		ClearPageReclaim(page);
 	}
@@ -192,7 +193,7 @@ bad_bmap:
 static bool swap_sched_async_compress(struct page *page)
 {
 	struct swap_info_struct *sis;
-	pg_data_t *pgdat = NODE_DATA(nid);
+	pg_data_t *pgdat = NODE_DATA(numa_node_id());
 
 	if (unlikely(!pgdat->kcompressd))
 		return false;
@@ -204,7 +205,7 @@ static bool swap_sched_async_compress(struct page *page)
 		return false;
 
 	sis = page_swap_info(page);
-	if (data_race(sis->flags & SWP_SYNCHRONOUS_IO)) {
+	if (sis->flags & SWP_SYNCHRONOUS_IO) {
 		if (kfifo_avail(&pgdat->kcompress_fifo) >= sizeof(page) &&
 			kfifo_in(&pgdat->kcompress_fifo, &page, sizeof(page))) {
 			wake_up_interruptible(&pgdat->kcompressd_wait);
@@ -259,6 +260,20 @@ int kcompressd(void *p)
 		.for_reclaim = 1,
 	};
 
+	/*
+	 * Tell the memory management that we're a "memory allocator",
+	 * and that if we need more memory we should get access to it
+	 * regardless (see "__alloc_pages()"). "kswapd" should
+	 * never get caught in the normal page freeing logic.
+	 *
+	 * (Kswapd normally doesn't need memory anyway, but sometimes
+	 * you need a small amount of memory in order to be able to
+	 * page out something else, and this flag essentially protects
+	 * us from recursively trying to free more memory as we're
+	 * trying to free the first piece of memory in the first place).
+	 */
+	current->flags |= PF_MEMALLOC | PF_KSWAPD;
+
 	while (!kthread_should_stop()) {
 		wait_event_interruptible(pgdat->kcompressd_wait,
 				!kfifo_is_empty(&pgdat->kcompress_fifo));
@@ -269,6 +284,8 @@ int kcompressd(void *p)
 			}
 		}
 	}
+	current->flags &= ~(PF_MEMALLOC | PF_KSWAPD);
+
 	return 0;
 }
 
@@ -389,10 +406,12 @@ int swap_readpage(struct page *page, bool synchronous)
 		goto out;
 	}
 
-	ret = bdev_read_page(sis->bdev, map_swap_page(page, &sis->bdev), page);
-	if (!ret) {
-		count_vm_event(PSWPIN);
-		goto out;
+	if (sis->flags & SWP_SYNCHRONOUS_IO) {
+		ret = bdev_read_page(sis->bdev, map_swap_page(page, &sis->bdev), page);
+		if (!ret) {
+			count_vm_event(PSWPIN);
+			goto out;
+		}
 	}
 
 	ret = 0;
