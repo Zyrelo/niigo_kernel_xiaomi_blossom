@@ -112,6 +112,13 @@ struct task_group;
 #define task_contributes_to_load(task)	((task->state & TASK_UNINTERRUPTIBLE) != 0 && \
 					 (task->flags & PF_FROZEN) == 0 && \
 					 (task->state & TASK_NOLOAD) == 0)
+enum task_boost_type {
+       TASK_BOOST_NONE = 0,
+       TASK_BOOST_ON_MID,
+       TASK_BOOST_ON_MAX,
+       TASK_BOOST_STRICT_MAX,
+       TASK_BOOST_END,
+};
 
 #ifdef CONFIG_DEBUG_ATOMIC_SLEEP
 
@@ -1513,6 +1520,7 @@ extern struct pid *cad_pid;
 #define PF_MEMALLOC		0x00000800	/* Allocating memory */
 #define PF_NPROC_EXCEEDED	0x00001000	/* set_user() noticed that RLIMIT_NPROC was exceeded */
 #define PF_USED_MATH		0x00002000	/* If unset the fpu must be initialized before use */
+#define PF_PERF_CRITICAL        0x00004000      /* Thread is performance-critical */
 #define PF_NOFREEZE		0x00008000	/* This thread should not be frozen */
 #define PF_FROZEN		0x00010000	/* Frozen for system suspend */
 #define PF_KSWAPD		0x00020000	/* I am kswapd */
@@ -1527,6 +1535,7 @@ extern struct pid *cad_pid;
 #define PF_NO_SETAFFINITY	0x04000000	/* Userland is not allowed to meddle with cpus_allowed */
 #define PF_MCE_EARLY		0x08000000      /* Early kill for mce process policy */
 #define PF_MEMALLOC_NOCMA	0x10000000	/* All allocation request will have _GFP_MOVABLE cleared */
+#define PF_WAKE_UP_IDLE         0x10000000     /* TTWU on an idle CPU */
 #define PF_MUTEX_TESTER		0x20000000	/* Thread belongs to the rt mutex tester */
 #define PF_FREEZER_SKIP		0x40000000	/* Freezer should not count it as freezable */
 #define PF_SUSPEND_TASK		0x80000000      /* This thread called freeze_processes() and should not be frozen */
@@ -2037,5 +2046,33 @@ static inline void rseq_syscall(struct pt_regs *regs)
 }
 
 #endif
+
+static inline u32 sched_get_wake_up_idle(struct task_struct *p)
+{
+       u32 enabled = p->flags & PF_WAKE_UP_IDLE;
+
+       return !!enabled;
+}
+
+static inline int sched_set_wake_up_idle(struct task_struct *p,
+                                               int wake_up_idle)
+{
+       int enable = !!wake_up_idle;
+
+       if (enable)
+               p->flags |= PF_WAKE_UP_IDLE;
+       else
+               p->flags &= ~PF_WAKE_UP_IDLE;
+
+       return 0;
+}
+
+static inline void set_wake_up_idle(bool enabled)
+{
+       if (enabled)
+               current->flags |= PF_WAKE_UP_IDLE;
+       else
+               current->flags &= ~PF_WAKE_UP_IDLE;
+}
 
 #endif

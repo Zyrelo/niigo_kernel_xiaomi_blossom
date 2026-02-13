@@ -62,9 +62,43 @@ void __blk_mq_tag_idle(struct blk_mq_hw_ctx *hctx)
 	blk_mq_tag_wakeup_all(tags, false);
 }
 
+/*
+ * For shared tag users, we track the number of currently active users
+ * and attempt to provide a fair share of the tag depth for each of them.
+ */
+static inline bool hctx_may_queue(struct blk_mq_hw_ctx *hctx,
+				  struct sbitmap_queue *bt)
+{
+	unsigned int depth, users;
+
+	if (!hctx || !(hctx->flags & BLK_MQ_F_TAG_SHARED))
+		return true;
+	if (!test_bit(BLK_MQ_S_TAG_ACTIVE, &hctx->state))
+		return true;
+
+	/*
+	 * Don't try dividing an ant
+	 */
+	if (bt->sb.depth == 1)
+		return true;
+
+	users = atomic_read(&hctx->tags->active_queues);
+	if (!users)
+		return true;
+
+	/*
+	 * Allow at least some tags
+	 */
+	depth = max((bt->sb.depth + users - 1) / users, 4U);
+	return atomic_read(&hctx->nr_active) < depth;
+}
+
 static int __blk_mq_get_tag(struct blk_mq_alloc_data *data,
 			    struct sbitmap_queue *bt)
 {
+	if (!(data->flags & BLK_MQ_REQ_INTERNAL) &&
+	    !hctx_may_queue(data->hctx, bt))
+		return -1;
 	if (data->shallow_depth)
 		return __sbitmap_queue_get_shallow(bt, data->shallow_depth);
 	else
@@ -184,6 +218,20 @@ struct bt_iter_data {
 	bool reserved;
 };
 
+static struct request *blk_mq_find_and_get_req(struct blk_mq_tags *tags,
+		unsigned int bitnr)
+{
+	struct request *rq;
+	unsigned long flags;
+
+	spin_lock_irqsave(&tags->lock, flags);
+	rq = tags->rqs[bitnr];
+	if (!rq || !refcount_inc_not_zero(&rq->ref))
+		rq = NULL;
+	spin_unlock_irqrestore(&tags->lock, flags);
+	return rq;
+}
+
 static bool bt_iter(struct sbitmap *bitmap, unsigned int bitnr, void *data)
 {
 	struct bt_iter_data *iter_data = data;
@@ -191,18 +239,23 @@ static bool bt_iter(struct sbitmap *bitmap, unsigned int bitnr, void *data)
 	struct blk_mq_tags *tags = hctx->tags;
 	bool reserved = iter_data->reserved;
 	struct request *rq;
+	bool ret = true;
 
 	if (!reserved)
 		bitnr += tags->nr_reserved_tags;
-	rq = tags->rqs[bitnr];
 
 	/*
 	 * We can hit rq == NULL here, because the tagging functions
 	 * test and set the bit before assining ->rqs[].
 	 */
-	if (rq && rq->q == hctx->queue)
+	rq = blk_mq_find_and_get_req(tags, bitnr);
+	if (!rq)
+		return true;
+
+	if (rq->q == hctx->queue)
 		iter_data->fn(hctx, rq, iter_data->data, reserved);
-	return true;
+	blk_mq_put_rq_ref(rq);
+	return ret;
 }
 
 static void bt_for_each(struct blk_mq_hw_ctx *hctx, struct sbitmap_queue *bt,
@@ -231,6 +284,7 @@ static bool bt_tags_iter(struct sbitmap *bitmap, unsigned int bitnr, void *data)
 	struct blk_mq_tags *tags = iter_data->tags;
 	bool reserved = iter_data->reserved;
 	struct request *rq;
+	bool ret = true;
 
 	if (!reserved)
 		bitnr += tags->nr_reserved_tags;
@@ -239,11 +293,13 @@ static bool bt_tags_iter(struct sbitmap *bitmap, unsigned int bitnr, void *data)
 	 * We can hit rq == NULL here, because the tagging functions
 	 * test and set the bit before assining ->rqs[].
 	 */
-	rq = tags->rqs[bitnr];
-	if (rq && blk_mq_request_started(rq))
+	rq = blk_mq_find_and_get_req(tags, bitnr);
+	if (!rq)
+		return true;
+	if (blk_mq_request_started(rq))
 		iter_data->fn(rq, iter_data->data, reserved);
-
-	return true;
+	blk_mq_put_rq_ref(rq);
+	return ret;
 }
 
 static void bt_tags_for_each(struct blk_mq_tags *tags, struct sbitmap_queue *bt,

@@ -54,6 +54,8 @@ struct kmem_cache *inotify_inode_mark_cachep __read_mostly;
 
 #include <linux/sysctl.h>
 
+static int zero;
+
 struct ctl_table inotify_table[] = {
 	{
 		.procname	= "max_user_instances",
@@ -61,7 +63,7 @@ struct ctl_table inotify_table[] = {
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec_minmax,
-		.extra1		= SYSCTL_ZERO,
+		.extra1		= &zero,
 	},
 	{
 		.procname	= "max_user_watches",
@@ -69,7 +71,7 @@ struct ctl_table inotify_table[] = {
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec_minmax,
-		.extra1		= SYSCTL_ZERO,
+		.extra1		= &zero,
 	},
 	{
 		.procname	= "max_queued_events",
@@ -77,7 +79,7 @@ struct ctl_table inotify_table[] = {
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec_minmax,
-		.extra1		= SYSCTL_ZERO
+		.extra1		= &zero
 	},
 	{ }
 };
@@ -187,7 +189,7 @@ static ssize_t copy_event_to_user(struct fsnotify_group *group,
 	 */
 	pad_name_len = round_event_name_len(fsn_event);
 	inotify_event.len = pad_name_len;
-	inotify_event.mask = inotify_mask_to_arg(fsn_event->mask);
+	inotify_event.mask = inotify_mask_to_arg(event->mask);
 	inotify_event.wd = event->wd;
 	inotify_event.cookie = event->sync_cookie;
 
@@ -635,7 +637,8 @@ static struct fsnotify_group *inotify_new_group(unsigned int max_events)
 		return ERR_PTR(-ENOMEM);
 	}
 	group->overflow_event = &oevent->fse;
-	fsnotify_init_event(group->overflow_event, NULL, FS_Q_OVERFLOW);
+	fsnotify_init_event(group->overflow_event, NULL);
+	oevent->mask = FS_Q_OVERFLOW;
 	oevent->wd = -1;
 	oevent->sync_cookie = 0;
 	oevent->name_len = 0;
@@ -748,9 +751,10 @@ SYSCALL_DEFINE3(inotify_add_watch, int, fd, const char __user *, pathname,
 		goto fput_and_out;
 
 	/* support stacked filesystems */
-	if(path.dentry && path.dentry->d_op) {
+	if (path.dentry && path.dentry->d_op) {
 		if (path.dentry->d_op->d_canonical_path) {
-			path.dentry->d_op->d_canonical_path(&path, &alteredpath);
+			path.dentry->d_op->d_canonical_path(&path,
+							    &alteredpath);
 			canonical_path = &alteredpath;
 			path_put(&path);
 		}

@@ -124,11 +124,7 @@ static inline void __blk_get_queue(struct request_queue *q)
 	kobject_get(&q->kobj);
 }
 
-static inline bool
-is_flush_rq(struct request *req, struct blk_mq_hw_ctx *hctx)
-{
-	return hctx->fq->flush_rq == req;
-}
+bool is_flush_rq(struct request *req);
 
 struct blk_flush_queue *blk_alloc_flush_queue(struct request_queue *q,
 		int node, int cmd_size, gfp_t flags);
@@ -244,7 +240,7 @@ int elevator_init_mq(struct request_queue *q);
 int elevator_switch_mq(struct request_queue *q,
 			      struct elevator_type *new_e);
 void elevator_exit(struct request_queue *, struct elevator_queue *);
-int elv_register_queue(struct request_queue *q, bool uevent);
+int elv_register_queue(struct request_queue *q);
 void elv_unregister_queue(struct request_queue *q);
 
 struct hd_struct *__disk_get_part(struct gendisk *disk, int partno);

@@ -301,22 +301,16 @@ enum rw_hint {
 	WRITE_LIFE_EXTREME	= RWH_WRITE_LIFE_EXTREME,
 };
 
+#define IOCB_EVENTFD		(1 << 0)
+#define IOCB_APPEND		(1 << 1)
+#define IOCB_DIRECT		(1 << 2)
+#define IOCB_HIPRI		(1 << 3)
+#define IOCB_DSYNC		(1 << 4)
+#define IOCB_SYNC		(1 << 5)
+#define IOCB_WRITE		(1 << 6)
+#define IOCB_NOWAIT		(1 << 7)
 /* kiocb is a read or write operation submitted by fs/aio.c. */
 #define IOCB_AIO_RW		(1 << 23)
-/* Match RWF_* bits to IOCB bits */
-#define IOCB_HIPRI		(__force int) RWF_HIPRI
-#define IOCB_DSYNC		(__force int) RWF_DSYNC
-#define IOCB_SYNC		(__force int) RWF_SYNC
-#define IOCB_NOWAIT		(__force int) RWF_NOWAIT
-#define IOCB_APPEND		(__force int) RWF_APPEND
-
-/* non-RWF related bits - start at 16 */
-#define IOCB_EVENTFD		(1 << 16)
-#define IOCB_DIRECT		(1 << 17)
-#define IOCB_WRITE		(1 << 18)
-/* iocb->ki_waitq is valid */
-#define IOCB_WAITQ		(1 << 19)
-#define IOCB_NOIO		(1 << 20)
 
 struct kiocb {
 	struct file		*ki_filp;
@@ -522,6 +516,11 @@ static inline void i_mmap_lock_write(struct address_space *mapping)
 static inline void i_mmap_unlock_write(struct address_space *mapping)
 {
 	up_write(&mapping->i_mmap_rwsem);
+}
+
+static inline int i_mmap_trylock_read(struct address_space *mapping)
+{
+	return down_read_trylock(&mapping->i_mmap_rwsem);
 }
 
 static inline void i_mmap_lock_read(struct address_space *mapping)
@@ -966,7 +965,7 @@ struct file {
 	struct address_space	*f_mapping;
 	errseq_t		f_wb_err;
 } __randomize_layout
-  __attribute__((aligned(4)));	/* lest something weird decides that 2 is OK */
+  __attribute__((aligned(8)));
 
 struct file_handle {
 	__u32 handle_bytes;
@@ -1108,6 +1107,7 @@ struct file_lock {
 		struct {
 			struct list_head link;	/* link in AFS vnode's pending_locks list */
 			int state;		/* state of grant or error if -ve */
+			unsigned int	debug_id;
 		} afs;
 	} fl_u;
 
@@ -2187,7 +2187,7 @@ static inline void kiocb_clone(struct kiocb *kiocb, struct kiocb *kiocb_src,
  *
  * I_SYNC_QUEUED	Inode is queued in b_io or b_more_io writeback lists.
  *			Used to detect that mark_inode_dirty() should not move
- * 			inode between dirty lists.
+ *			inode between dirty lists.
  *
  * Q: What is the difference between I_WILL_FREE and I_FREEING?
  */
@@ -3441,26 +3441,22 @@ static inline int iocb_flags(struct file *file)
 
 static inline int kiocb_set_rw_flags(struct kiocb *ki, rwf_t flags)
 {
-	int kiocb_flags = 0;
-
-	/* make sure there's no overlap between RWF and private IOCB flags */
-	BUILD_BUG_ON((__force int)RWF_SUPPORTED & IOCB_EVENTFD);
-
-	if (!flags)
-		return 0;
 	if (unlikely(flags & ~RWF_SUPPORTED))
 		return -EOPNOTSUPP;
 
 	if (flags & RWF_NOWAIT) {
 		if (!(ki->ki_filp->f_mode & FMODE_NOWAIT))
 			return -EOPNOTSUPP;
-		kiocb_flags |= IOCB_NOIO;
+		ki->ki_flags |= IOCB_NOWAIT;
 	}
-	kiocb_flags |= (__force int)(flags & RWF_SUPPORTED);
+	if (flags & RWF_HIPRI)
+		ki->ki_flags |= IOCB_HIPRI;
+	if (flags & RWF_DSYNC)
+		ki->ki_flags |= IOCB_DSYNC;
 	if (flags & RWF_SYNC)
-		kiocb_flags |= IOCB_DSYNC;
-
-	ki->ki_flags |= kiocb_flags;
+		ki->ki_flags |= (IOCB_DSYNC | IOCB_SYNC);
+	if (flags & RWF_APPEND)
+		ki->ki_flags |= IOCB_APPEND;
 	return 0;
 }
 

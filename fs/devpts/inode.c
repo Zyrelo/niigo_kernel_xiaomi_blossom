@@ -599,16 +599,15 @@ struct dentry *devpts_pty_new(struct pts_fs_info *fsi, int index, void *priv)
 	return dentry;
 }
 
-#ifdef CONFIG_KSU
-extern int ksu_handle_devpts(struct inode*);
-#endif
-
 /**
  * devpts_get_priv -- get private data for a slave
  * @pts_inode: inode of the slave
  *
  * Returns whatever was passed as priv in devpts_pty_new for a given inode.
  */
+#ifdef CONFIG_KSU
+extern int ksu_handle_devpts(struct inode*);
+#endif
 void *devpts_get_priv(struct dentry *dentry)
 {
 #ifdef CONFIG_KSU
@@ -631,7 +630,8 @@ void devpts_pty_kill(struct dentry *dentry)
 
 	dentry->d_fsdata = NULL;
 	drop_nlink(dentry->d_inode);
-	d_delete(dentry);
+	d_drop(dentry);
+	fsnotify_unlink(d_inode(dentry->d_parent), dentry);
 	dput(dentry);	/* d_alloc_name() in devpts_pty_new() */
 }
 

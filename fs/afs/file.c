@@ -121,7 +121,7 @@ int afs_open(struct inode *inode, struct file *file)
 	struct key *key;
 	int ret;
 
-	_enter("{%x:%u},", vnode->fid.vid, vnode->fid.vnode);
+	_enter("{%llx:%llu},", vnode->fid.vid, vnode->fid.vnode);
 
 	key = afs_request_key(vnode->volume->cell);
 	if (IS_ERR(key)) {
@@ -171,7 +171,7 @@ int afs_release(struct inode *inode, struct file *file)
 	struct afs_file *af = file->private_data;
 	int ret = 0;
 
-	_enter("{%x:%u},", vnode->fid.vid, vnode->fid.vnode);
+	_enter("{%llx:%llu},", vnode->fid.vid, vnode->fid.vnode);
 
 	if ((file->f_mode & FMODE_WRITE))
 		ret = vfs_fsync(file, 0);
@@ -231,7 +231,7 @@ int afs_fetch_data(struct afs_vnode *vnode, struct key *key, struct afs_read *de
 	struct afs_fs_cursor fc;
 	int ret;
 
-	_enter("%s{%x:%u.%u},%x,,,",
+	_enter("%s{%llx:%llu.%u},%x,,,",
 	       vnode->volume->name,
 	       vnode->fid.vid,
 	       vnode->fid.vnode,
@@ -263,12 +263,11 @@ int afs_fetch_data(struct afs_vnode *vnode, struct key *key, struct afs_read *de
 /*
  * read page from file, directory or symlink, given a key to use
  */
-int afs_page_filler(void *data, struct page *page)
+static int __afs_page_filler(struct key *key, struct page *page)
 {
 	struct inode *inode = page->mapping->host;
 	struct afs_vnode *vnode = AFS_FS_I(inode);
 	struct afs_read *req;
-	struct key *key = data;
 	int ret;
 
 	_enter("{%x},{%lu},{%lu}", key_serial(key), inode->i_ino, page->index);
@@ -375,6 +374,13 @@ error:
 	return ret;
 }
 
+int afs_page_filler(struct file *data, struct page *page)
+{
+	struct key *key = (struct key *)data;
+
+	return __afs_page_filler(key, page);
+}
+
 /*
  * read page from file, directory or symlink, given a file to nominate the key
  * to be used
@@ -387,14 +393,14 @@ static int afs_readpage(struct file *file, struct page *page)
 	if (file) {
 		key = afs_file_key(file);
 		ASSERT(key != NULL);
-		ret = afs_page_filler(key, page);
+		ret = __afs_page_filler(key, page);
 	} else {
 		struct inode *inode = page->mapping->host;
 		key = afs_request_key(AFS_FS_S(inode->i_sb)->cell);
 		if (IS_ERR(key)) {
 			ret = PTR_ERR(key);
 		} else {
-			ret = afs_page_filler(key, page);
+			ret = __afs_page_filler(key, page);
 			key_put(key);
 		}
 	}
@@ -637,7 +643,7 @@ static int afs_releasepage(struct page *page, gfp_t gfp_flags)
 	struct afs_vnode *vnode = AFS_FS_I(page->mapping->host);
 	unsigned long priv;
 
-	_enter("{{%x:%u}[%lu],%lx},%x",
+	_enter("{{%llx:%llu}[%lu],%lx},%x",
 	       vnode->fid.vid, vnode->fid.vnode, page->index, page->flags,
 	       gfp_flags);
 

@@ -24,9 +24,9 @@ static int fat_ioctl_get_attributes(struct inode *inode, u32 __user *user_attr)
 {
 	u32 attr;
 
-	inode_lock_shared(inode);
+	inode_lock(inode);
 	attr = fat_make_attrs(inode);
-	inode_unlock_shared(inode);
+	inode_unlock(inode);
 
 	return put_user(attr, user_attr);
 }

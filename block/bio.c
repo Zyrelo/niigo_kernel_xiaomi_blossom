@@ -613,11 +613,6 @@ void __bio_clone_fast(struct bio *bio, struct bio *bio_src)
 	bio->bi_iter = bio_src->bi_iter;
 	bio->bi_io_vec = bio_src->bi_io_vec;
 
-#if defined(CONFIG_MTK_HW_FDE)
-	/* for FDE */
-	bio->bi_hw_fde = bio_src->bi_hw_fde;
-	bio->bi_key_idx = bio_src->bi_key_idx;
-#endif
 	bio_clone_blkcg_association(bio, bio_src);
 }
 EXPORT_SYMBOL(__bio_clone_fast);
@@ -941,25 +936,6 @@ int submit_bio_wait(struct bio *bio)
 	return blk_status_to_errno(bio->bi_status);
 }
 EXPORT_SYMBOL(submit_bio_wait);
-
-static void submit_bio_nowait_endio(struct bio *bio)
-{
-	bio_put(bio);
-}
-
-/**
- * submit_bio_nowait - submit a bio for fire-and-forget
- * @bio: The &struct bio which describes the I/O
- *
- * Simple wrapper around submit_bio() that takes care of bio_put() on completion
- */
-void submit_bio_nowait(struct bio *bio)
-{
-	bio->bi_end_io = submit_bio_nowait_endio;
-	bio->bi_opf |= REQ_SYNC;
-	submit_bio(bio);
-}
-EXPORT_SYMBOL(submit_bio_nowait);
 
 /**
  * bio_advance - increment/complete a bio by some number of bytes
@@ -1695,13 +1671,33 @@ defer:
 }
 EXPORT_SYMBOL_GPL(bio_check_pages_dirty);
 
+void update_io_ticks(struct hd_struct *part, unsigned long now)
+{
+	unsigned long stamp;
+	int cpu;
+again:
+	stamp = READ_ONCE(part->stamp);
+	if (unlikely(stamp != now)) {
+		if (likely(cmpxchg(&part->stamp, stamp, now) == stamp)) {
+			cpu = part_stat_lock();
+			__part_stat_add(cpu, part, io_ticks, 1);
+			part_stat_unlock();
+		}
+	}
+	if (part->partno) {
+		part = &part_to_disk(part)->part0;
+		goto again;
+	}
+}
+
 void generic_start_io_acct(struct request_queue *q, int op,
 			   unsigned long sectors, struct hd_struct *part)
 {
 	const int sgrp = op_stat_group(op);
-	int cpu = part_stat_lock();
+	int cpu;
 
-	part_round_stats(q, cpu, part);
+	cpu = part_stat_lock();
+	update_io_ticks(part, jiffies);
 	part_stat_inc(cpu, part, ios[sgrp]);
 	part_stat_add(cpu, part, sectors[sgrp], sectors);
 	part_inc_in_flight(q, part, op_is_write(op));
@@ -1713,12 +1709,15 @@ EXPORT_SYMBOL(generic_start_io_acct);
 void generic_end_io_acct(struct request_queue *q, int req_op,
 			 struct hd_struct *part, unsigned long start_time)
 {
-	unsigned long duration = jiffies - start_time;
+	unsigned long now = jiffies;
+	unsigned long duration = now - start_time;
 	const int sgrp = op_stat_group(req_op);
-	int cpu = part_stat_lock();
+	int cpu;
 
+	cpu = part_stat_lock();
+	update_io_ticks(part, now);
 	part_stat_add(cpu, part, nsecs[sgrp], jiffies_to_nsecs(duration));
-	part_round_stats(q, cpu, part);
+	part_stat_add(cpu, part, time_in_queue, duration);
 	part_dec_in_flight(q, part, op_is_write(req_op));
 
 	part_stat_unlock();
